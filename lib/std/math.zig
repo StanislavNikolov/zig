@@ -165,7 +165,7 @@ pub fn approxEqRel(comptime T: type, x: T, y: T, tolerance: T) bool {
     if (isNan(x) or isNan(y))
         return false;
 
-    return @fabs(x - y) <= max(@fabs(x), @fabs(y)) * tolerance;
+    return @fabs(x - y) <= @max(@fabs(x), @fabs(y)) * tolerance;
 }
 
 test "approxEqAbs and approxEqRel" {
@@ -434,104 +434,15 @@ pub fn Min(comptime A: type, comptime B: type) type {
     return @TypeOf(@as(A, 0) + @as(B, 0));
 }
 
-/// Returns the smaller number. When one parameter's type's full range
-/// fits in the other, the return type is the smaller type.
-pub fn min(x: anytype, y: anytype) Min(@TypeOf(x), @TypeOf(y)) {
-    const Result = Min(@TypeOf(x), @TypeOf(y));
-    if (x < y) {
-        // TODO Zig should allow this as an implicit cast because x is
-        // immutable and in this scope it is known to fit in the
-        // return type.
-        switch (@typeInfo(Result)) {
-            .Int => return @intCast(Result, x),
-            else => return x,
-        }
-    } else {
-        // TODO Zig should allow this as an implicit cast because y is
-        // immutable and in this scope it is known to fit in the
-        // return type.
-        switch (@typeInfo(Result)) {
-            .Int => return @intCast(Result, y),
-            else => return y,
-        }
-    }
-}
-
-test "min" {
-    try testing.expect(min(@as(i32, -1), @as(i32, 2)) == -1);
-    {
-        var a: u16 = 999;
-        var b: u32 = 10;
-        var result = min(a, b);
-        try testing.expect(@TypeOf(result) == u16);
-        try testing.expect(result == 10);
-    }
-    {
-        var a: f64 = 10.34;
-        var b: f32 = 999.12;
-        var result = min(a, b);
-        try testing.expect(@TypeOf(result) == f64);
-        try testing.expect(result == 10.34);
-    }
-    {
-        var a: i8 = -127;
-        var b: i16 = -200;
-        var result = min(a, b);
-        try testing.expect(@TypeOf(result) == i16);
-        try testing.expect(result == -200);
-    }
-    {
-        const a = 10.34;
-        var b: f32 = 999.12;
-        var result = min(a, b);
-        try testing.expect(@TypeOf(result) == f32);
-        try testing.expect(result == 10.34);
-    }
-}
-
-/// Finds the minimum of three numbers.
-pub fn min3(x: anytype, y: anytype, z: anytype) @TypeOf(x, y, z) {
-    return min(x, min(y, z));
-}
-
-test "min3" {
-    try testing.expect(min3(@as(i32, 0), @as(i32, 1), @as(i32, 2)) == 0);
-    try testing.expect(min3(@as(i32, 0), @as(i32, 2), @as(i32, 1)) == 0);
-    try testing.expect(min3(@as(i32, 1), @as(i32, 0), @as(i32, 2)) == 0);
-    try testing.expect(min3(@as(i32, 1), @as(i32, 2), @as(i32, 0)) == 0);
-    try testing.expect(min3(@as(i32, 2), @as(i32, 0), @as(i32, 1)) == 0);
-    try testing.expect(min3(@as(i32, 2), @as(i32, 1), @as(i32, 0)) == 0);
-}
-
-/// Returns the maximum of two numbers. Return type is the one with the
-/// larger range.
-pub fn max(x: anytype, y: anytype) @TypeOf(x, y) {
-    return if (x > y) x else y;
-}
-
-test "max" {
-    try testing.expect(max(@as(i32, -1), @as(i32, 2)) == 2);
-    try testing.expect(max(@as(i32, 2), @as(i32, -1)) == 2);
-}
-
-/// Finds the maximum of three numbers.
-pub fn max3(x: anytype, y: anytype, z: anytype) @TypeOf(x, y, z) {
-    return max(x, max(y, z));
-}
-
-test "max3" {
-    try testing.expect(max3(@as(i32, 0), @as(i32, 1), @as(i32, 2)) == 2);
-    try testing.expect(max3(@as(i32, 0), @as(i32, 2), @as(i32, 1)) == 2);
-    try testing.expect(max3(@as(i32, 1), @as(i32, 0), @as(i32, 2)) == 2);
-    try testing.expect(max3(@as(i32, 1), @as(i32, 2), @as(i32, 0)) == 2);
-    try testing.expect(max3(@as(i32, 2), @as(i32, 0), @as(i32, 1)) == 2);
-    try testing.expect(max3(@as(i32, 2), @as(i32, 1), @as(i32, 0)) == 2);
-}
+pub const min = @compileError("deprecated; use @min instead");
+pub const max = @compileError("deprecated; use @max instead");
+pub const min3 = @compileError("deprecated; use @min instead");
+pub const max3 = @compileError("deprecated; use @max instead");
 
 /// Limit val to the inclusive range [lower, upper].
 pub fn clamp(val: anytype, lower: anytype, upper: anytype) @TypeOf(val, lower, upper) {
     assert(lower <= upper);
-    return max(lower, min(val, upper));
+    return @max(lower, @min(val, upper));
 }
 test "clamp" {
     // Within range
@@ -795,7 +706,7 @@ pub fn IntFittingRange(comptime from: comptime_int, comptime to: comptime_int) t
         return u0;
     }
     const signedness: std.builtin.Signedness = if (from < 0) .signed else .unsigned;
-    const largest_positive_integer = max(if (from < 0) (-from) - 1 else from, to); // two's complement
+    const largest_positive_integer = @max(if (from < 0) (-from) - 1 else from, to); // two's complement
     const base = log2(largest_positive_integer);
     const upper = (1 << base) - 1;
     var magnitude_bits = if (upper >= largest_positive_integer) base else base + 1;
@@ -1193,16 +1104,29 @@ pub const AlignCastError = error{UnalignedMemory};
 
 /// Align cast a pointer but return an error if it's the wrong alignment
 pub fn alignCast(comptime alignment: u29, ptr: anytype) AlignCastError!@TypeOf(@alignCast(alignment, ptr)) {
-    const addr = @ptrToInt(ptr);
+    const addr = @intFromPtr(ptr);
     if (addr % alignment != 0) {
         return error.UnalignedMemory;
     }
     return @alignCast(alignment, ptr);
 }
 
-pub fn isPowerOfTwo(v: anytype) bool {
-    assert(v != 0);
-    return (v & (v - 1)) == 0;
+/// Asserts `int > 0`.
+pub fn isPowerOfTwo(int: anytype) bool {
+    assert(int > 0);
+    return (int & (int - 1)) == 0;
+}
+
+test isPowerOfTwo {
+    try testing.expect(isPowerOfTwo(@as(u8, 1)));
+    try testing.expect(isPowerOfTwo(2));
+    try testing.expect(!isPowerOfTwo(@as(i16, 3)));
+    try testing.expect(isPowerOfTwo(4));
+    try testing.expect(!isPowerOfTwo(@as(u32, 31)));
+    try testing.expect(isPowerOfTwo(32));
+    try testing.expect(!isPowerOfTwo(@as(i64, 63)));
+    try testing.expect(isPowerOfTwo(128));
+    try testing.expect(isPowerOfTwo(@as(u128, 256)));
 }
 
 /// Aligns the given integer type bit width to a width divisible by 8.
@@ -1387,7 +1311,7 @@ pub fn lossyCast(comptime T: type, value: anytype) T {
     switch (@typeInfo(T)) {
         .Float => {
             switch (@typeInfo(@TypeOf(value))) {
-                .Int => return @intToFloat(T, value),
+                .Int => return @floatFromInt(T, value),
                 .Float => return @floatCast(T, value),
                 .ComptimeInt => return @as(T, value),
                 .ComptimeFloat => return @as(T, value),
@@ -1411,7 +1335,7 @@ pub fn lossyCast(comptime T: type, value: anytype) T {
                     } else if (value <= minInt(T)) {
                         return @as(T, minInt(T));
                     } else {
-                        return @floatToInt(T, value);
+                        return @intFromFloat(T, value);
                     }
                 },
                 else => @compileError("bad type"),
@@ -1477,7 +1401,7 @@ pub fn maxInt(comptime T: type) comptime_int {
     const info = @typeInfo(T);
     const bit_count = info.Int.bits;
     if (bit_count == 0) return 0;
-    return (1 << (bit_count - @boolToInt(info.Int.signedness == .signed))) - 1;
+    return (1 << (bit_count - @intFromBool(info.Int.signedness == .signed))) - 1;
 }
 
 /// Returns the minimum value of integer type T.
@@ -1700,7 +1624,7 @@ test "order.compare" {
 
 test "compare.reverse" {
     inline for (@typeInfo(CompareOperator).Enum.fields) |op_field| {
-        const op = @intToEnum(CompareOperator, op_field.value);
+        const op = @enumFromInt(CompareOperator, op_field.value);
         try testing.expect(compare(2, op, 3) == compare(3, op.reverse(), 2));
         try testing.expect(compare(3, op, 3) == compare(3, op.reverse(), 3));
         try testing.expect(compare(4, op, 3) == compare(3, op.reverse(), 4));
@@ -1719,13 +1643,13 @@ pub inline fn boolMask(comptime MaskInt: type, value: bool) MaskInt {
 
     // The u1 and i1 cases tend to overflow,
     // so we special case them here.
-    if (MaskInt == u1) return @boolToInt(value);
+    if (MaskInt == u1) return @intFromBool(value);
     if (MaskInt == i1) {
         // The @as here is a workaround for #7950
-        return @bitCast(i1, @as(u1, @boolToInt(value)));
+        return @bitCast(i1, @as(u1, @intFromBool(value)));
     }
 
-    return -%@intCast(MaskInt, @boolToInt(value));
+    return -%@intCast(MaskInt, @intFromBool(value));
 }
 
 test "boolMask" {
@@ -1784,8 +1708,8 @@ pub fn break_f80(x: f80) F80 {
 pub inline fn sign(i: anytype) @TypeOf(i) {
     const T = @TypeOf(i);
     return switch (@typeInfo(T)) {
-        .Int, .ComptimeInt => @as(T, @boolToInt(i > 0)) - @as(T, @boolToInt(i < 0)),
-        .Float, .ComptimeFloat => @intToFloat(T, @boolToInt(i > 0)) - @intToFloat(T, @boolToInt(i < 0)),
+        .Int, .ComptimeInt => @as(T, @intFromBool(i > 0)) - @as(T, @intFromBool(i < 0)),
+        .Float, .ComptimeFloat => @floatFromInt(T, @intFromBool(i > 0)) - @floatFromInt(T, @intFromBool(i < 0)),
         .Vector => |vinfo| blk: {
             switch (@typeInfo(vinfo.child)) {
                 .Int, .Float => {

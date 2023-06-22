@@ -112,7 +112,7 @@ pub const Value = struct {
             return self.castTag(T.base_tag);
         }
         inline for (@typeInfo(Tag).Enum.fields) |field| {
-            const t = @intToEnum(Tag, field.value);
+            const t = @enumFromInt(Tag, field.value);
             if (self.legacy.ptr_otherwise.tag == t) {
                 if (T == t.Type()) {
                     return @fieldParentPtr(T, "base", self.legacy.ptr_otherwise);
@@ -503,7 +503,7 @@ pub const Value = struct {
         return self.toIntern().toType();
     }
 
-    pub fn enumToInt(val: Value, ty: Type, mod: *Module) Allocator.Error!Value {
+    pub fn intFromEnum(val: Value, ty: Type, mod: *Module) Allocator.Error!Value {
         const ip = &mod.intern_pool;
         return switch (ip.indexToKey(ip.typeOf(val.toIntern()))) {
             // Assume it is already an integer and return it directly.
@@ -703,7 +703,7 @@ pub const Value = struct {
         switch (ty.zigTypeTag(mod)) {
             .Void => {},
             .Bool => {
-                buffer[0] = @boolToInt(val.toBool());
+                buffer[0] = @intFromBool(val.toBool());
             },
             .Int, .Enum => {
                 const int_info = ty.intInfo(mod);
@@ -836,7 +836,7 @@ pub const Value = struct {
                 const bits = ty.intInfo(mod).bits;
                 if (bits == 0) return;
 
-                switch (mod.intern_pool.indexToKey((try val.enumToInt(ty, mod)).toIntern()).int.storage) {
+                switch (mod.intern_pool.indexToKey((try val.intFromEnum(ty, mod)).toIntern()).int.storage) {
                     inline .u64, .i64 => |int| std.mem.writeVarPackedInt(buffer, bit_offset, bits, int, endian),
                     .big_int => |bigint| bigint.writePackedTwosComplement(buffer, bit_offset, bits, endian),
                     else => unreachable,
@@ -1170,10 +1170,10 @@ pub const Value = struct {
                     if (T == f80) {
                         @panic("TODO we can't lower this properly on non-x86 llvm backend yet");
                     }
-                    return @intToFloat(T, x);
+                    return @floatFromInt(T, x);
                 },
-                .lazy_align => |ty| @intToFloat(T, ty.toType().abiAlignment(mod)),
-                .lazy_size => |ty| @intToFloat(T, ty.toType().abiSize(mod)),
+                .lazy_align => |ty| @floatFromInt(T, ty.toType().abiAlignment(mod)),
+                .lazy_size => |ty| @floatFromInt(T, ty.toType().abiSize(mod)),
             },
             .float => |float| switch (float.storage) {
                 inline else => |x| @floatCast(T, x),
@@ -1191,7 +1191,7 @@ pub const Value = struct {
         var i: usize = limbs.len;
         while (i != 0) {
             i -= 1;
-            const limb: f128 = @intToFloat(f128, limbs[i]);
+            const limb: f128 = @floatFromInt(f128, limbs[i]);
             result = @mulAdd(f128, base, result, limb);
         }
         if (positive) {
@@ -1593,8 +1593,8 @@ pub const Value = struct {
                 return a_type.eql(b_type, mod);
             },
             .Enum => {
-                const a_val = try a.enumToInt(ty, mod);
-                const b_val = try b.enumToInt(ty, mod);
+                const a_val = try a.intFromEnum(ty, mod);
+                const b_val = try b.intFromEnum(ty, mod);
                 const int_ty = ty.intTagType(mod);
                 return eqlAdvanced(a_val, int_ty, b_val, int_ty, mod, opt_sema);
             },
@@ -1823,7 +1823,7 @@ pub const Value = struct {
     }
 
     pub fn isRuntimeValue(val: Value, mod: *Module) bool {
-        return mod.intern_pool.indexToKey(val.toIntern()) == .runtime_value;
+        return mod.intern_pool.isRuntimeValue(val.toIntern());
     }
 
     /// Returns true if a Value is backed by a variable
@@ -1851,33 +1851,9 @@ pub const Value = struct {
     }
 
     pub fn isPtrToThreadLocal(val: Value, mod: *Module) bool {
-        return val.ip_index != .none and switch (mod.intern_pool.indexToKey(val.toIntern())) {
-            .variable => false,
-            else => val.isPtrToThreadLocalInner(mod),
-        };
-    }
-
-    pub fn isPtrToThreadLocalInner(val: Value, mod: *Module) bool {
-        return val.ip_index != .none and switch (mod.intern_pool.indexToKey(val.toIntern())) {
-            .variable => |variable| variable.is_threadlocal,
-            .ptr => |ptr| switch (ptr.addr) {
-                .decl => |decl_index| {
-                    const decl = mod.declPtr(decl_index);
-                    assert(decl.has_tv);
-                    return decl.val.isPtrToThreadLocalInner(mod);
-                },
-                .mut_decl => |mut_decl| {
-                    const decl = mod.declPtr(mut_decl.decl);
-                    assert(decl.has_tv);
-                    return decl.val.isPtrToThreadLocalInner(mod);
-                },
-                .int => false,
-                .eu_payload, .opt_payload => |base_ptr| base_ptr.toValue().isPtrToThreadLocalInner(mod),
-                .comptime_field => |comptime_field| comptime_field.toValue().isPtrToThreadLocalInner(mod),
-                .elem, .field => |base_index| base_index.base.toValue().isPtrToThreadLocalInner(mod),
-            },
-            else => false,
-        };
+        const backing_decl = mod.intern_pool.getBackingDecl(val.toIntern()).unwrap() orelse return false;
+        const variable = mod.declPtr(backing_decl).getOwnedVariable(mod) orelse return false;
+        return variable.is_threadlocal;
     }
 
     // Asserts that the provided start/end are in-bounds.
@@ -2015,12 +1991,7 @@ pub const Value = struct {
     }
 
     pub fn isUndef(val: Value, mod: *Module) bool {
-        if (val.ip_index == .none) return false;
-        return switch (mod.intern_pool.indexToKey(val.toIntern())) {
-            .undef => true,
-            .simple_value => |v| v == .undefined,
-            else => false,
-        };
+        return val.ip_index != .none and mod.intern_pool.isUndef(val.toIntern());
     }
 
     /// TODO: check for cases such as array that is not marked undef but all the element
@@ -2124,30 +2095,30 @@ pub const Value = struct {
         };
     }
 
-    pub fn intToFloat(val: Value, arena: Allocator, int_ty: Type, float_ty: Type, mod: *Module) !Value {
-        return intToFloatAdvanced(val, arena, int_ty, float_ty, mod, null) catch |err| switch (err) {
+    pub fn floatFromInt(val: Value, arena: Allocator, int_ty: Type, float_ty: Type, mod: *Module) !Value {
+        return floatFromIntAdvanced(val, arena, int_ty, float_ty, mod, null) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => unreachable,
         };
     }
 
-    pub fn intToFloatAdvanced(val: Value, arena: Allocator, int_ty: Type, float_ty: Type, mod: *Module, opt_sema: ?*Sema) !Value {
+    pub fn floatFromIntAdvanced(val: Value, arena: Allocator, int_ty: Type, float_ty: Type, mod: *Module, opt_sema: ?*Sema) !Value {
         if (int_ty.zigTypeTag(mod) == .Vector) {
             const result_data = try arena.alloc(InternPool.Index, int_ty.vectorLen(mod));
             const scalar_ty = float_ty.scalarType(mod);
             for (result_data, 0..) |*scalar, i| {
                 const elem_val = try val.elemValue(mod, i);
-                scalar.* = try (try intToFloatScalar(elem_val, scalar_ty, mod, opt_sema)).intern(scalar_ty, mod);
+                scalar.* = try (try floatFromIntScalar(elem_val, scalar_ty, mod, opt_sema)).intern(scalar_ty, mod);
             }
             return (try mod.intern(.{ .aggregate = .{
                 .ty = float_ty.toIntern(),
                 .storage = .{ .elems = result_data },
             } })).toValue();
         }
-        return intToFloatScalar(val, float_ty, mod, opt_sema);
+        return floatFromIntScalar(val, float_ty, mod, opt_sema);
     }
 
-    pub fn intToFloatScalar(val: Value, float_ty: Type, mod: *Module, opt_sema: ?*Sema) !Value {
+    pub fn floatFromIntScalar(val: Value, float_ty: Type, mod: *Module, opt_sema: ?*Sema) !Value {
         return switch (mod.intern_pool.indexToKey(val.toIntern())) {
             .undef => (try mod.intern(.{ .undef = float_ty.toIntern() })).toValue(),
             .int => |int| switch (int.storage) {
@@ -2155,30 +2126,30 @@ pub const Value = struct {
                     const float = bigIntToFloat(big_int.limbs, big_int.positive);
                     return mod.floatValue(float_ty, float);
                 },
-                inline .u64, .i64 => |x| intToFloatInner(x, float_ty, mod),
+                inline .u64, .i64 => |x| floatFromIntInner(x, float_ty, mod),
                 .lazy_align => |ty| if (opt_sema) |sema| {
-                    return intToFloatInner((try ty.toType().abiAlignmentAdvanced(mod, .{ .sema = sema })).scalar, float_ty, mod);
+                    return floatFromIntInner((try ty.toType().abiAlignmentAdvanced(mod, .{ .sema = sema })).scalar, float_ty, mod);
                 } else {
-                    return intToFloatInner(ty.toType().abiAlignment(mod), float_ty, mod);
+                    return floatFromIntInner(ty.toType().abiAlignment(mod), float_ty, mod);
                 },
                 .lazy_size => |ty| if (opt_sema) |sema| {
-                    return intToFloatInner((try ty.toType().abiSizeAdvanced(mod, .{ .sema = sema })).scalar, float_ty, mod);
+                    return floatFromIntInner((try ty.toType().abiSizeAdvanced(mod, .{ .sema = sema })).scalar, float_ty, mod);
                 } else {
-                    return intToFloatInner(ty.toType().abiSize(mod), float_ty, mod);
+                    return floatFromIntInner(ty.toType().abiSize(mod), float_ty, mod);
                 },
             },
             else => unreachable,
         };
     }
 
-    fn intToFloatInner(x: anytype, dest_ty: Type, mod: *Module) !Value {
+    fn floatFromIntInner(x: anytype, dest_ty: Type, mod: *Module) !Value {
         const target = mod.getTarget();
         const storage: InternPool.Key.Float.Storage = switch (dest_ty.floatBits(target)) {
-            16 => .{ .f16 = @intToFloat(f16, x) },
-            32 => .{ .f32 = @intToFloat(f32, x) },
-            64 => .{ .f64 = @intToFloat(f64, x) },
-            80 => .{ .f80 = @intToFloat(f80, x) },
-            128 => .{ .f128 = @intToFloat(f128, x) },
+            16 => .{ .f16 = @floatFromInt(f16, x) },
+            32 => .{ .f32 = @floatFromInt(f32, x) },
+            64 => .{ .f64 = @floatFromInt(f64, x) },
+            80 => .{ .f80 = @floatFromInt(f80, x) },
+            128 => .{ .f128 = @floatFromInt(f128, x) },
             else => unreachable,
         };
         return (try mod.intern(.{ .float = .{
@@ -2193,7 +2164,7 @@ pub const Value = struct {
         }
 
         const w_value = @fabs(scalar);
-        return @divFloor(@floatToInt(std.math.big.Limb, std.math.log2(w_value)), @typeInfo(std.math.big.Limb).Int.bits) + 1;
+        return @divFloor(@intFromFloat(std.math.big.Limb, std.math.log2(w_value)), @typeInfo(std.math.big.Limb).Int.bits) + 1;
     }
 
     pub const OverflowArithmeticResult = struct {
@@ -2364,7 +2335,7 @@ pub const Value = struct {
         }
 
         return OverflowArithmeticResult{
-            .overflow_bit = try mod.intValue(Type.u1, @boolToInt(overflowed)),
+            .overflow_bit = try mod.intValue(Type.u1, @intFromBool(overflowed)),
             .wrapped_result = try mod.intValue_big(ty, result_bigint.toConst()),
         };
     }
@@ -2458,7 +2429,7 @@ pub const Value = struct {
         const rhs_bigint = rhs.toBigInt(&rhs_space, mod);
         const limbs = try arena.alloc(
             std.math.big.Limb,
-            std.math.max(
+            @max(
                 // For the saturate
                 std.math.big.int.calcTwosCompLimbCount(info.bits),
                 lhs_bigint.limbs.len + rhs_bigint.limbs.len,
@@ -2572,7 +2543,7 @@ pub const Value = struct {
         const limbs = try arena.alloc(
             std.math.big.Limb,
             // + 1 for negatives
-            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len) + 1,
+            @max(lhs_bigint.limbs.len, rhs_bigint.limbs.len) + 1,
         );
         var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
         result_bigint.bitAnd(lhs_bigint, rhs_bigint);
@@ -2638,7 +2609,7 @@ pub const Value = struct {
         const rhs_bigint = rhs.toBigInt(&rhs_space, mod);
         const limbs = try arena.alloc(
             std.math.big.Limb,
-            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len),
+            @max(lhs_bigint.limbs.len, rhs_bigint.limbs.len),
         );
         var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
         result_bigint.bitOr(lhs_bigint, rhs_bigint);
@@ -2677,7 +2648,7 @@ pub const Value = struct {
         const limbs = try arena.alloc(
             std.math.big.Limb,
             // + 1 for negatives
-            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len) + 1,
+            @max(lhs_bigint.limbs.len, rhs_bigint.limbs.len) + 1,
         );
         var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
         result_bigint.bitXor(lhs_bigint, rhs_bigint);
@@ -3177,7 +3148,7 @@ pub const Value = struct {
             result_bigint.truncate(result_bigint.toConst(), info.signedness, info.bits);
         }
         return OverflowArithmeticResult{
-            .overflow_bit = try mod.intValue(Type.u1, @boolToInt(overflowed)),
+            .overflow_bit = try mod.intValue(Type.u1, @intFromBool(overflowed)),
             .wrapped_result = try mod.intValue_big(ty, result_bigint.toConst()),
         };
     }
@@ -4144,6 +4115,20 @@ pub const Value = struct {
 
     pub fn isGenericPoison(val: Value) bool {
         return val.toIntern() == .generic_poison;
+    }
+
+    /// For an integer (comptime or fixed-width) `val`, returns the comptime-known bounds of the value.
+    /// If `val` is not undef, the bounds are both `val`.
+    /// If `val` is undef and has a fixed-width type, the bounds are the bounds of the type.
+    /// If `val` is undef and is a `comptime_int`, returns null.
+    pub fn intValueBounds(val: Value, mod: *Module) !?[2]Value {
+        if (!val.isUndef(mod)) return .{ val, val };
+        const ty = mod.intern_pool.typeOf(val.toIntern());
+        if (ty == .comptime_int_type) return null;
+        return .{
+            try ty.toType().minInt(mod, ty.toType()),
+            try ty.toType().maxInt(mod, ty.toType()),
+        };
     }
 
     /// This type is not copyable since it may contain pointers to its inner data.
